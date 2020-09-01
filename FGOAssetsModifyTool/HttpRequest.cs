@@ -1,44 +1,70 @@
-﻿using System.Net;
-using System.Text;
-using System.Collections.Generic;
+﻿using Newtonsoft.Json.Linq;
 using System.IO;
+using System.Net;
+using System.Text;
 
 namespace FGOAssetsModifyTool
 {
-    class HttpRequest
+    static class HttpRequest
     {
-        public static string PhttpReq(string url, string parameters)
+        private const string METHOD_GET = "GET";
+        private const string METHOD_POST = "POST";
+
+        public static WebResponse Get(string url)
         {
+            HttpWebRequest request = SetupRequest(url);
+            request.Method = METHOD_GET;
+            return request.GetResponse();
+        }
 
-            HttpWebRequest hRequest = (HttpWebRequest)HttpWebRequest.Create(url);
-            hRequest.CookieContainer = new CookieContainer();
+        private static HttpWebRequest SetupRequest(string url)
+        {
+            HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+            request.CookieContainer = new CookieContainer();
+            request.AllowAutoRedirect = true;
+            request.KeepAlive = true;
+            request.ServicePoint.Expect100Continue = false;
+            request.Accept = "gzip, identity";
+            request.ContentType = "application/x-www-form-urlencoded";
+            request.UserAgent = "Dalvik/2.1.0 (Linux; U; Android 10; SM-G960W Build/QP1A.190711.020)";
+            request.Timeout = 10000;
+            return request;
+        }
 
-            hRequest.Accept = "gzip, identity";
-            hRequest.UserAgent = "Dalvik/2.1.0 (Linux; U; Android 6.0.1; MI 6 Build/V417IR)";
-            hRequest.ServicePoint.Expect100Continue = false;
-            hRequest.KeepAlive = true;
-            hRequest.Method = "POST";
+        public static string ToText(this WebResponse response)
+        {
+            using (Stream stream = response.GetResponseStream())
+            {
+                StreamReader streamReader = new StreamReader(stream, Encoding.UTF8);
+                return streamReader.ReadToEnd();
+            }
+        }
 
-            hRequest.ContentType = "application/x-www-form-urlencoded";
+        public static JObject ToJson(this WebResponse response)
+        {
+            string text = response.ToText();
+            return JObject.Parse(text);
+        }
 
-            bool first = true;
+        public static byte[] ToBinary(this WebResponse response)
+        {
+            using (Stream stream = response.GetResponseStream())
+            {
+                int readCount = 0;
 
-            hRequest.ContentLength = parameters.Length;
+                int bufferSize = 1 << 17;
 
-            byte[] dataParsed = Encoding.UTF8.GetBytes(parameters);
-            hRequest.GetRequestStream().Write(dataParsed, 0, dataParsed.Length);
+                var buffer = new byte[bufferSize];
+                using (var memory = new MemoryStream())
+                {
+                    while ((readCount = stream.Read(buffer, 0, bufferSize)) > 0)
+                    {
+                        memory.Write(buffer, 0, readCount);
+                    }
+                    return memory.ToArray();
+                }
 
-
-            hRequest.Timeout = 5 * 1000;
-
-            HttpWebResponse response = (HttpWebResponse)hRequest.GetResponse();
-
-            Stream myResponseStream = response.GetResponseStream();
-            StreamReader myStreamReader = new StreamReader(myResponseStream, Encoding.UTF8);
-            string retString = myStreamReader.ReadToEnd();
-            myStreamReader.Close();
-            myResponseStream.Close();
-            return retString;
+            }
         }
     }
 }
