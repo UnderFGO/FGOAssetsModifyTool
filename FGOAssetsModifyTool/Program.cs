@@ -5,11 +5,177 @@ using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
 using System.Text.RegularExpressions;
+using System.Linq;
 
 namespace FGOAssetsModifyTool
 {
 	class Program
 	{
+		static string path = Directory.GetCurrentDirectory();
+		static DirectoryInfo folder = new DirectoryInfo(path + @"\Android\");
+		static DirectoryInfo scriptsFolder = new DirectoryInfo(path + @"\Android\Scripts");
+		static DirectoryInfo gamedata = new DirectoryInfo(path + @"\Android\gamedata\");
+		static DirectoryInfo decrypt = new DirectoryInfo(path + @"\Decrypt\");
+		static DirectoryInfo encrypt = new DirectoryInfo(path + @"\Encrypt\");
+		static DirectoryInfo decryptScripts = new DirectoryInfo(path + @"\DecryptScripts\");
+		static DirectoryInfo encryptScripts = new DirectoryInfo(path + @"\EncryptScripts\");
+
+		static string AssetStorageFilePath = folder.FullName + "AssetStorage_dec.txt";
+		static DirectoryInfo AssetsFolder = new DirectoryInfo(path + @"\assets\bin\Data\");
+
+		static string GetAssetStorage(string assetBundleKey)
+        {
+			string assetStorage = HttpRequest
+				.Get($"https://cdn.data.fate-go.jp/AssetStorages/{assetBundleKey}Android/AssetStorage.txt")
+				.ToText();
+			return CatAndMouseGame.MouseGame8(assetStorage);
+		}
+
+		static void DecryptAssetList()
+        {
+			string[] assetStore = File.ReadAllLines(AssetStorageFilePath);
+			Console.WriteLine("Parsing json...");
+			JArray AudioArray = new JArray();
+			//JArray MovieArray = new JArray();
+			JArray AssetArray = new JArray();
+			for (int i = 2; i < assetStore.Length; ++i)
+			{
+				string[] tmp = assetStore[i].Split(',');
+				string assetName;
+				string fileName;
+
+				//if (tmp[1] == "SYSTEM")
+    //            {
+				//	assetName = tmp[tmp.Length - 1].Replace('/', '_');
+				//	fileName = assetName;
+				//	AssetArray.Add(new JObject(new JProperty("assetName", assetName), new JProperty("fileName", fileName)));
+				//}
+				if (tmp[4].Contains("Audio"))
+				{
+					assetName = tmp[tmp.Length - 1].Replace('/', '@');
+					fileName = CatAndMouseGame.GetMD5String(assetName);
+					AudioArray.Add(new JObject(new JProperty("audioName", assetName), new JProperty("fileName", fileName)));
+				}
+				//else if (tmp[4].Contains("Movie"))
+				//{
+				//    assetName = tmp[tmp.Length - 1].Replace('/', '@');
+				//    fileName = CatAndMouseGame.GetMD5String(assetName);
+				//    MovieArray.Add(new JObject(new JProperty("movieName", assetName), new JProperty("fileName", fileName)));
+				//}
+				else if (!tmp[4].Contains("Movie"))
+				{
+					assetName = tmp[tmp.Length - 1].Replace('/', '@') + ".unity3d";
+					fileName = CatAndMouseGame.getShaName(assetName);
+					AssetArray.Add(new JObject(new JProperty("assetName", assetName), new JProperty("fileName", fileName)));
+				}
+			}
+			Console.WriteLine("Writing file to: AudioName.json");
+			File.WriteAllText(folder.FullName + "AudioName.json", AudioArray.ToString());
+			//Console.WriteLine("Writing file to: MovieName.json");
+			//File.WriteAllText(folder.FullName + "MovieName.json", MovieArray.ToString());
+			Console.WriteLine("Writing file to: AssetName.json");
+			File.WriteAllText(folder.FullName + "AssetName.json", AssetArray.ToString());
+		}
+
+		static void DownloadAssets()
+        {
+			
+			if (!AssetsFolder.Exists)
+            {
+				AssetsFolder.Create();
+			} else if (!File.Exists(gamedata.FullName + "raw"))
+            {
+				DownloadTopGameData();
+			}
+            
+            DecryptAssetBundle();
+
+            string assetBundleFolder = JObject.Parse(File.ReadAllText(gamedata.FullName + "assetbundle.json"))["folderName"].ToString();
+			string assetStorage = GetAssetStorage(assetBundleFolder);
+			File.WriteAllText(AssetStorageFilePath, assetStorage);
+
+			DecryptAssetList();
+			var assetList = JArray.Parse(File.ReadAllText(folder.FullName + "AssetName.json"));
+			foreach (var asset in assetList)
+			{
+				string filename = asset["fileName"].ToString();
+				string assetName = asset["assetName"].ToString();
+				if (!assetName.EndsWith(".unity3d"))
+                {
+					continue;
+                }
+				string writePath = AssetsFolder.FullName;
+				var names = assetName.Split('@');
+				if (names.Length > 1)
+                {
+					writePath += string.Join(@"\", names);
+					string writeDirectory = Path.GetDirectoryName(writePath);
+					if (!Directory.Exists(writeDirectory))
+                    {
+						Directory.CreateDirectory(writeDirectory);
+                    }
+
+				} else
+                {
+					writePath = AssetsFolder.FullName + assetName;
+				}
+				if (File.Exists(writePath))
+                {
+					continue;
+                }
+				try
+                {
+					byte[] raw = HttpRequest.Get($"https://cdn.data.fate-go.jp/AssetStorages/{assetBundleFolder}Android/{filename}").ToBinary();
+					byte[] output = CatAndMouseGame.MouseGame4(raw);
+					using (FileStream fs = new FileStream(writePath, FileMode.OpenOrCreate, FileAccess.Write))
+					{
+						fs.Write(output, 0, output.Length);
+					}
+					Console.WriteLine($"{string.Join(@"\", names)} √");
+				}
+				catch (Exception ex)
+				{
+					Console.WriteLine($"Dwonload Failed: {filename} - {assetName}\n{ex}");
+					continue;
+				}
+
+			}
+		}
+
+		static void DownloadTopGameData()
+		{
+			JObject res = HttpRequest.Get("https://game.fate-go.jp/gamedata/top?appVer=2.13.2").ToJson();
+
+            if (res["response"][0]["fail"]["action"] != null)
+			{
+				if (res["response"][0]["fail"]["action"].ToString() == "app_version_up")
+				{
+					string tmp = res["response"][0]["fail"]["detail"].ToString();
+					tmp = Regex.Replace(tmp, @".*新ver.：(.*)、現.*", "$1", RegexOptions.Singleline);
+					Console.WriteLine("new version: " + tmp.ToString());
+					var result = HttpRequest.Get($"https://game.fate-go.jp/gamedata/top?appVer={tmp}").ToText();
+					res = JObject.Parse(result);
+					if (!Directory.Exists(gamedata.FullName))
+						Directory.CreateDirectory(gamedata.FullName);
+					File.WriteAllText(gamedata.FullName + "raw", result);
+					File.WriteAllText(gamedata.FullName + "assetbundle", res["response"][0]["success"]["assetbundle"].ToString());
+					Console.WriteLine("Writing file to: " + gamedata.FullName + "assetbundle");
+					File.WriteAllText(gamedata.FullName + "master", res["response"][0]["success"]["master"].ToString());
+					Console.WriteLine("Writing file to: " + gamedata.FullName + "master");
+					File.WriteAllText(gamedata.FullName + "webview", res["response"][0]["success"]["webview"].ToString());
+					Console.WriteLine("Writing file to: " + gamedata.FullName + "webview");
+				}
+			}
+		}
+
+		static void DecryptAssetBundle()
+		{
+			string data = File.ReadAllText(gamedata.FullName + "assetbundle");
+			Dictionary<string, object> dictionary = (Dictionary<string, object>)MasterDataUnpacker.MouseInfoMsgPack(Convert.FromBase64String(data));
+			File.WriteAllText(gamedata.FullName + "assetbundle.json", JsonConvert.SerializeObject(dictionary));
+			Console.WriteLine("folder name: " + dictionary["folderName"].ToString());
+		}
+
 		static void DisplayMenu()
 		{
 			Console.Clear();
@@ -30,16 +196,10 @@ namespace FGOAssetsModifyTool
 					"12: [gamedata/top]解密assetbundle(assets文件夹名)\n" +
 					"13: [gamedata/top]解密webview(url)\n" +
 					"69: 切换为美服密钥\n" +
-					"67: 切换为国服密钥");
+					"67: 切换为国服密钥\n" +
+					"99: 下载&解密图片资源");
 				int arg = Convert.ToInt32(Console.ReadLine());
-				string path = Directory.GetCurrentDirectory();
-				DirectoryInfo folder = new DirectoryInfo(path + @"\Android\");
-				DirectoryInfo scriptsFolder = new DirectoryInfo(path + @"\Android\Scripts");
-				DirectoryInfo gamedata = new DirectoryInfo(path + @"\Android\gamedata\");
-				DirectoryInfo decrypt = new DirectoryInfo(path + @"\Decrypt\");
-				DirectoryInfo encrypt = new DirectoryInfo(path + @"\Encrypt\");
-				DirectoryInfo decryptScripts = new DirectoryInfo(path + @"\DecryptScripts\");
-				DirectoryInfo encryptScripts = new DirectoryInfo(path + @"\EncryptScripts\");
+				
 				switch (arg)
 				{
 					case 69:
@@ -211,72 +371,12 @@ namespace FGOAssetsModifyTool
 						}
 					case 9:
 						{
-							string result = HttpRequest.PhttpReq("https://game.fate-go.jp/gamedata/top", "appVer=2.13.2");
-							JObject res = JObject.Parse(result);
-							if (res["response"][0]["fail"]["action"] != null)
-							{
-								if(res["response"][0]["fail"]["action"].ToString() == "app_version_up")
-								{
-									string tmp = res["response"][0]["fail"]["detail"].ToString();
-									tmp = Regex.Replace(tmp, @".*新ver.：(.*)、現.*", "$1", RegexOptions.Singleline);
-									Console.WriteLine("new version: " + tmp.ToString());
-									result = HttpRequest.PhttpReq("https://game.fate-go.jp/gamedata/top", "appVer=" + tmp.ToString());
-									res = JObject.Parse(result);
-								}
-								else
-								{
-									break;
-								}
-							}
-							if (!Directory.Exists(gamedata.FullName))
-								Directory.CreateDirectory(gamedata.FullName);
-							File.WriteAllText(gamedata.FullName + "raw", result);
-							File.WriteAllText(gamedata.FullName + "assetbundle", res["response"][0]["success"]["assetbundle"].ToString());
-							Console.WriteLine("Writing file to: " + gamedata.FullName + "assetbundle");
-							File.WriteAllText(gamedata.FullName + "master", res["response"][0]["success"]["master"].ToString());
-							Console.WriteLine("Writing file to: " + gamedata.FullName + "master");
-							File.WriteAllText(gamedata.FullName + "webview", res["response"][0]["success"]["webview"].ToString());
-							Console.WriteLine("Writing file to: " + gamedata.FullName + "webview");
+							DownloadTopGameData();
 							break;
 						}
 					case 0:
 						{
-							string[] assetStore = File.ReadAllLines(folder.FullName + "AssetStorage_dec.txt");
-							Console.WriteLine("Parsing json...");
-							JArray AudioArray = new JArray();
-							//JArray MovieArray = new JArray();
-							JArray AssetArray = new JArray();
-							for (int i = 2; i < assetStore.Length; ++i)
-							{
-								string[] tmp = assetStore[i].Split(',');
-								string assetName;
-								string fileName;
-
-								if (tmp[4].Contains("Audio"))
-								{
-									assetName = tmp[tmp.Length - 1].Replace('/', '@');
-									fileName = CatAndMouseGame.GetMD5String(assetName);
-									AudioArray.Add(new JObject(new JProperty("audioName", assetName), new JProperty("fileName", fileName)));
-								}
-								//else if (tmp[4].Contains("Movie"))
-								//{
-								//    assetName = tmp[tmp.Length - 1].Replace('/', '@');
-								//    fileName = CatAndMouseGame.GetMD5String(assetName);
-								//    MovieArray.Add(new JObject(new JProperty("movieName", assetName), new JProperty("fileName", fileName)));
-								//}
-								else if (!tmp[4].Contains("Movie"))
-								{
-									assetName = tmp[tmp.Length - 1].Replace('/', '@') + ".unity3d";
-									fileName = CatAndMouseGame.getShaName(assetName);
-									AssetArray.Add(new JObject(new JProperty("assetName", assetName), new JProperty("fileName", fileName)));
-								}
-							}
-							Console.WriteLine("Writing file to: AudioName.json");
-							File.WriteAllText(folder.FullName + "AudioName.json", AudioArray.ToString());
-							//Console.WriteLine("Writing file to: MovieName.json");
-							//File.WriteAllText(folder.FullName + "MovieName.json", MovieArray.ToString());
-							Console.WriteLine("Writing file to: AssetName.json");
-							File.WriteAllText(folder.FullName + "AssetName.json", AssetArray.ToString());
+							DecryptAssetList();
 							break;
 						}
 					case 11:
@@ -299,15 +399,7 @@ namespace FGOAssetsModifyTool
 						}
 					case 12:
 						{
-							string data = File.ReadAllText(gamedata.FullName + "assetbundle");
-							Dictionary<string, object> dictionary = (Dictionary<string, object>)MasterDataUnpacker.MouseInfoMsgPack(Convert.FromBase64String(data));
-							string str = null;
-							foreach (var a in dictionary)
-							{
-								str += a.Key + ": " + a.Value.ToString() + "\r\n";
-							}
-							File.WriteAllText(gamedata.FullName + "assetbundle.txt", str);
-							Console.WriteLine("folder name: " + dictionary["folderName"].ToString());
+							DecryptAssetBundle();
 							break;
 						}
 					case 13:
@@ -325,6 +417,9 @@ namespace FGOAssetsModifyTool
 							Console.WriteLine("Writing file to: " + gamedata.FullName + "webview.txt");
 							break;
 						}
+					case 99:
+						DownloadAssets();
+						break;
 					default:
 						{
 							Console.WriteLine("请输入一个可接受的选项");
